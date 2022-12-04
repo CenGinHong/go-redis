@@ -22,14 +22,14 @@ const (
 	AE_ONCE   TeType = 2 // 只能执行一次
 )
 
-type FileProc func(loop *AeLoop, fd int, extra any)
-type TimeProc func(loop *AeLoop, id int, extra any)
+type FileProc func(loop *AeLoop, fd int, extra interface{})
+type TimeProc func(loop *AeLoop, id int, extra interface{})
 
 type AeFileEvent struct {
 	fd    int
 	mask  FeType
 	proc  FileProc
-	extra any
+	extra interface{}
 }
 
 type AeTimeEvent struct {
@@ -38,13 +38,13 @@ type AeTimeEvent struct {
 	when     int64  // ms 发生时间点
 	interval int64  // ms 发生间隔
 	proc     TimeProc
-	extra    any
+	extra    interface{}
 	next     *AeTimeEvent
 }
 
 type AeLoop struct {
 	FileEvents      map[int]*AeFileEvent // 在client注册和销毁是都要使用到，方便进行添加和销魂
-	TimeEvents      *AeTimeEvent
+	TimeEvents      *AeTimeEvent // 使用的链表结构
 	fileEventFd     int
 	timeEventNextId int
 	stop            bool
@@ -62,8 +62,10 @@ func getFeKey(fd int, mask FeType) int {
 	}
 }
 
+// getEpollMask 获得已经绑定的事件
 func (loop *AeLoop) getEpollMask(fd int) uint32 {
 	var ev uint32
+	// 检测A事件可读这个是否已经绑定，没有就添加
 	if loop.FileEvents[getFeKey(fd, AE_READABLE)] != nil {
 		ev |= fe2ep[AE_READABLE]
 	}
@@ -73,10 +75,11 @@ func (loop *AeLoop) getEpollMask(fd int) uint32 {
 	return ev
 }
 
-func (loop *AeLoop) AddFileEvent(fd int, mask FeType, proc FileProc, extra any) {
+func (loop *AeLoop) AddFileEvent(fd int, mask FeType, proc FileProc, extra interface{}) {
 	// epoll ctl
 	// 如果已经订阅过就把操作设为修改
 	op := unix.EPOLL_CTL_ADD
+	// 获取已经绑定的事件
 	ev := loop.getEpollMask(fd)
 	if ev != 0 {
 		op = unix.EPOLL_CTL_MOD
@@ -84,17 +87,17 @@ func (loop *AeLoop) AddFileEvent(fd int, mask FeType, proc FileProc, extra any) 
 	// 或操作相当于增加了一种类型操作
 	// ev是对应epoll_in,epoll_out
 	ev |= fe2ep[mask]
-	// 订阅回调事件
+	// 订阅回调事件，第一个fd用的是创建的epollfd
 	if err := unix.EpollCtl(loop.fileEventFd, op, fd,
-		&unix.EpollEvent{Fd: int32(fd), Events: ev});err != nil {
+		&unix.EpollEvent{Fd: int32(fd), Events: ev}); err != nil {
 		log.Printf("epoll ctr err: %v\n", err)
 		return
 	}
-	// ae ctl
+	// 创建ae事件
 	fe := AeFileEvent{
-		fd:    fd,
-		mask:  mask,
-		proc:  proc,
+		fd:    fd, 
+		mask:  mask, // readable or writeable
+		proc:  proc, // 事件的处理
 		extra: extra,
 	}
 	loop.FileEvents[getFeKey(fd, mask)] = &fe
@@ -117,11 +120,12 @@ func (loop *AeLoop) RemoveFileEvent(fd int, mask FeType) {
 	delete(loop.FileEvents, getFeKey(fd, mask))
 }
 
+// 获取当前时间
 func GetMsTime() int64 {
 	return time.Now().UnixNano() / 1e6
 }
 
-func (loop *AeLoop) AddTimeEvent(mask TeType, interval int64, proc TimeProc, extra any) int {
+func (loop *AeLoop) AddTimeEvent(mask TeType, interval int64, proc TimeProc, extra interface{}) int {
 	id := loop.timeEventNextId
 	loop.timeEventNextId++
 	te := AeTimeEvent{
@@ -133,6 +137,7 @@ func (loop *AeLoop) AddTimeEvent(mask TeType, interval int64, proc TimeProc, ext
 		extra:    extra,
 		next:     loop.TimeEvents,
 	}
+	// 头插入
 	loop.TimeEvents = &te
 	return id
 }
@@ -181,13 +186,14 @@ func (loop *AeLoop) nearestTime() int64 {
 }
 
 func (loop *AeLoop) AeWait() (tes []*AeTimeEvent, fes []*AeFileEvent, err error) {
-	// 为了方式filevents阻塞获取timevent的获取，求出下一个timeEvent到来之前的时间
+	// loop.nearestTime() 求出等待io事件的最长时间，最长不能超过当前时间+1s，最短是10ms
 	timeout := loop.nearestTime() - GetMsTime()
 	if timeout <= 0 {
 		timeout = 10
 	}
-	// 收集所有的fd
+	// 收集所有的网络事件fd
 	var events [128]unix.EpollEvent
+	// 等待事件时间不能超过下一个时间事件到来之前
 	n, err := unix.EpollWait(loop.fileEventFd, events[:], int(timeout))
 	if err != nil {
 		log.Printf("epoll wait err: %v\n", err)
@@ -238,6 +244,7 @@ func (loop *AeLoop) AeProcess(tes []*AeTimeEvent, fes []*AeFileEvent) {
 
 func (loop *AeLoop) AeMain() {
 	for !loop.stop {
+		// 收集所有的事件
 		tes, fes, err := loop.AeWait()
 		if err != nil {
 			loop.stop = true

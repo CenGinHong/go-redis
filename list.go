@@ -12,24 +12,16 @@ type ListType struct {
 }
 
 type List struct {
-	ListType // 使用组合方式，这里能不能用接口？
+	ListType 
 	head     *Node
-	// tail     *Node
+	tail     *Node
 	length int
 }
 
 func ListCreate(listType ListType) *List {
-	// var list List
-	// list.ListType = listType
-	dummyHead := &Node{
-		Val: CreateObject(GSTR, nil),
-	}
-	dummyHead.next = dummyHead
-	dummyHead.prev = dummyHead
-	return &List{
-		ListType: listType,
-		head:     dummyHead,
-	}
+	var list List
+	list.ListType = listType
+	return &list
 }
 
 func (list *List) Length() int {
@@ -37,118 +29,83 @@ func (list *List) Length() int {
 }
 
 func (list *List) First() *Node {
-	// return list.head
-	if list.length == 0 {
-		return nil
-	}
-	return list.head.next
+	return list.head
 }
 
 func (list *List) Last() *Node {
-	// return list.tail
-	if list.length == 0 {
-		return nil
-	}
-	return list.head.prev
+	return list.tail
 }
 
 func (list *List) Find(val *GObj) *Node {
-	// p := list.head
-	// for p != nil {
-	// 	if list.EqualFunc(p.Val, val) {
-	// 		break
-	// 	}
-	// 	p = p.next
-	// }
-	// return p
-	var ret *Node
-	for p := list.head.next; p != list.head; p = p.next {
+	p := list.head
+	for p != nil {
 		if list.EqualFunc(p.Val, val) {
-			ret = p
 			break
 		}
+		p = p.next
 	}
-	return ret
+	return p
 }
 
 func (list *List) Append(val *GObj) {
-	// n := &Node{
-	// 	Val: val,
-	// }
-	// if list.head == nil {
-	// 	list.head = n
-	// 	list.tail = n
-	// } else {
-	// 	n.prev = list.tail
-	// 	list.tail.next = n
-	// 	list.tail = list.tail.next
-	// }
-	// list.length++
 	n := &Node{
 		Val: val,
 	}
-	p := list.head.prev
-	p.next = n
-	n.prev = p
-	list.head.prev = n
-	n.next = list.head
+	if list.head == nil {
+		list.head = n
+		list.tail = n
+	} else {
+		n.prev = list.tail
+		list.tail.next = n
+		list.tail = list.tail.next
+	}
 	list.length++
 }
 
 func (list *List) LPush(val *GObj) {
-	// n := &Node{
-	// 	Val: val,
-	// }
-	// if list.head == nil {
-	// 	list.head = n
-	// 	list.tail = n
-	// } else {
-	// 	n.next = list.head
-	// 	list.head.prev = n
-	// 	list.head = n
-	// }
-	// list.length++
-
 	n := &Node{
 		Val: val,
 	}
-	p := list.head.next
-	n.next = p
-	p.prev = n
-	list.head.next = n
-	n.prev = list.head
+	if list.head == nil {
+		list.head = n
+		list.tail = n
+	} else {
+		n.next = list.head
+		list.head.prev = n
+		list.head = n
+	}
 	list.length++
 }
 
-func (list *List) delNode(n *Node) {
-	// if n == nil {
-	// 	return
-	// }
-	// if list.head == n {
-	// 	n.next.prev = nil
-	// 	list.head = n.next
-	// 	n.next = nil
-	// } else if list.tail == n {
-	// 	n.prev.next = nil
-	// 	list.tail = n.prev
-	// 	n.prev = nil
-	// } else {
-	// 	n.prev.next = n.next
-	// 	n.next.prev = n.prev
-	// 	n.prev = nil
-	// 	n.next = nil
-	// }
-	// list.length--
-	if n == nil || list.length == 0 {
+func (list *List) DelNode(n *Node) {
+	if n == nil {
 		return
 	}
-	n.prev.next = n.next
-	n.next.prev = n.prev
-	n.next = nil
-	n.prev = nil
+	if list.head == n {
+		if n.next != nil {
+			n.next.prev = nil
+		}
+		list.head = n.next
+		n.next = nil
+	} else if list.tail == n {
+		if n.prev != nil {
+			n.prev.next = nil
+		}
+		list.tail = n.prev
+		n.prev = nil
+	} else {
+		if n.prev != nil {
+			n.prev.next = n.next
+		}
+		if n.next != nil {
+			n.next.prev = n.prev
+		}
+		n.prev = nil
+		n.next = nil
+	}
 	list.length--
 }
 
 func (list *List) Delete(val *GObj) {
-	list.delNode(list.Find(val))
+	list.DelNode(list.Find(val))
 }

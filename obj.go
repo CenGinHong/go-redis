@@ -12,7 +12,7 @@ const (
 	GDICT GType = 0x04
 )
 
-type GVal any
+type GVal interface{}
 
 type GObj struct {
 	Type_    GType
@@ -28,6 +28,13 @@ func (o *GObj) IntVal() int {
 	return val
 }
 
+func (o *GObj) StrVal() string {
+	if o.Type_ != GSTR {
+		return ""
+	}
+	return o.Val_.(string)
+}
+
 func CreateFromInt(val int) *GObj {
 	return &GObj{
 		Type_:    GSTR,
@@ -36,7 +43,7 @@ func CreateFromInt(val int) *GObj {
 	}
 }
 
-func CreateObject(typ GType, ptr any) *GObj {
+func CreateObject(typ GType, ptr interface{}) *GObj {
 	return &GObj{
 		Type_:    typ,
 		Val_:     ptr,
@@ -51,7 +58,7 @@ func (o *GObj) IncrRefCount() {
 func (o *GObj) DecrRefCount() {
 	o.refCount--
 	if o.refCount == 0 {
-		// let GC do the woek
+		// let GC do the work
 		o.Val_ = nil
 	}
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"hash/fnv"
 	"log"
 	"os"
@@ -20,27 +19,27 @@ const (
 )
 
 const (
-	GODIS_IO_BUF     int = 1024 * 16 // iobuf长度
-	GODIS_MAX_BULK   int = 1024 * 4  // bulk最长
-	GODIS_MAX_INLINE int = 1024 * 4  // 限制一个inline多长
+	IO_BUF     int = 1024 * 16 // iobuf长度
+	MAX_BULK   int = 1024 * 4  // bulk最长
+	MAX_INLINE int = 1024 * 4  // 限制一个inline多长
 )
 
-type GodisDB struct {
+type GoRedisDB struct {
 	data   *Dict
 	expire *Dict
 }
 
-type GodisServer struct {
+type GoRedisServer struct {
 	fd      int
 	port    int
-	db      *GodisDB
-	clients map[int]*GodisClient
+	db      *GoRedisDB
+	clients map[int]*GoRedisClient
 	aeLoop  *AeLoop
 }
 
-type GodisClient struct {
+type GoRedisClient struct {
 	fd       int
-	db       *GodisDB
+	db       *GoRedisDB
 	args     []*GObj
 	reply    *List
 	sentLen  int // 一个GObj可能不能发送完毕，此时用于记录断点，用于下次发送，即记录replylist第一个元素已经发送的部分
@@ -51,41 +50,64 @@ type GodisClient struct {
 	bulkLen  int
 }
 
-// Global Varibles
-var server GodisServer
+type CommandProc func(c *GoRedisClient)
 
-func ProcessCommand(client *GodisClient) {
+// do not support bulk command
+type GoRedisCommand struct {
+	name  string
+	proc  CommandProc
+	arity int
+}
+
+// Global Varibles
+var server GoRedisServer
+
+var cmdTable []GoRedisCommand = []GoRedisCommand{
+	{"get", getCommand, 2},
+	{"set", setCommand, 3},
+}
+
+func getCommand(c *GoRedisClient) {
+	// TODO
+}
+
+func setCommand(c *GoRedisClient) {
+	// TODO
+}
+
+func ProcessCommand(client *GoRedisClient) {
 	//TODO: lookup command
 	//TODO: call command
 	//TODO: decrRef args
+	resetClient(client)
 }
 
-func freeClient(client *GodisClient) {
+func freeClient(client *GoRedisClient) {
 	//TODO: delete file event
 	//TODO: decrRef reply & args list
 	//TODO: delete from clients
 }
 
-func resetClient(client *GodisClient) {
-
+func resetClient(client *GoRedisClient) {
+	client.cmdTy = COMMAND_UNKNOW
 }
 
-func (client *GodisClient) findLineInQuery() (int, error) {
-	index := strings.IndexAny(string(client.queryBuf[:client.queryLen]), "\r\n")
-	if index < 0 && client.queryLen > GODIS_MAX_INLINE {
+func (client *GoRedisClient) findLineInQuery() (int, error) {
+	index := strings.Index(string(client.queryBuf[:client.queryLen]), "\r\n")
+	if index < 0 && client.queryLen > MAX_INLINE {
 		return index, errors.New("to bug inline cmd")
 	}
 	return index, nil
 }
 
-func (client *GodisClient) getNumInQuery(s, e int) (int, error) {
+func (client *GoRedisClient) getNumInQuery(s, e int) (int, error) {
 	num, err := strconv.Atoi(string(client.queryBuf[s:e]))
 	client.queryBuf = client.queryBuf[e+2:]
 	client.queryLen -= e + 2
 	return num, err
 }
 
-func handleInlineBuf(client *GodisClient) (bool, error) {
+func handleInlineBuf(client *GoRedisClient) (bool, error) {
 	index, err := client.findLineInQuery()
 	// err是因为一个inline溢出,可能是发生了攻击
 	if index < 0 {
@@ -101,7 +123,7 @@ func handleInlineBuf(client *GodisClient) (bool, error) {
 	return true, nil
 }
 
-func handleBulkBuf(client *GodisClient) (bool, error) {
+func handleBulkBuf(client *GoRedisClient) (bool, error) {
 	if client.bulkNum == 0 {
 		// 说明还没有读出来
 		index, err := client.findLineInQuery()
@@ -122,28 +144,38 @@ func handleBulkBuf(client *GodisClient) (bool, error) {
 	for client.bulkNum > 0 {
 		// read bulk length
 		if client.bulkLen == 0 {
-			// 读出形如 $3r\r\nset\r\n
-			if client.queryBuf[0] != '$' {
-				return false, errors.New("expect $ for bulk length")
-			}
 			index, err := client.findLineInQuery()
 			if index < 0 {
 				return false, err
+			}
+			// 读出形如 $3r\r\nset\r\n
+			if client.queryBuf[0] != '$' {
+				return false, errors.New("expect $ for bulk length")
 			}
 			blen, err := client.getNumInQuery(1, index)
 			if err != nil || blen == 0 {
 				return false, err
 			}
+			if blen > MAX_BULK {
+				return false, errors.New("too big bulk")
+			}
 			client.bulkLen = blen
 		}
-		index, err := client.findLineInQuery()
-		if index < 0 {
-			return false, err
+		if client.queryLen < client.bulkLen+2 {
+			return false, nil
 		}
-		// 长度的应该和\r\n的位置呼应
-		if client.bulkLen != index {
-			return false, fmt.Errorf("expect bulk length %v, get %v", client.bulkLen, index)
+		index := client.bulkLen
+		if client.queryBuf[index] != '\r' || client.queryBuf[index+1] != '\n' {
+			return false, errors.New("expect CRLF for bulk end")
 		}
+		// index, err := client.findLineInQuery()
+		// if index < 0 {
+		// 	return false, err
+		// }
+		// // 长度的应该和\r\n的位置呼应
+		// if client.bulkLen != index {
+		// 	return false, fmt.Errorf("expect bulk length %v, get %v", client.bulkLen, index)
+		// }
 		// bulkNum会迭代递减
 		client.args[len(client.args)-client.bulkNum] = CreateObject(GSTR, string(client.queryBuf[:index]))
 		client.queryBuf = client.queryBuf[index+2:]
@@ -154,7 +186,7 @@ func handleBulkBuf(client *GodisClient) (bool, error) {
 	return true, nil
 }
 
-func ProcessQueryBuf(client *GodisClient) error {
+func ProcessQueryBuf(client *GoRedisClient) error {
 	for client.queryLen > 0 {
 		if client.cmdTy == COMMAND_UNKNOW {
 			if client.queryBuf[0] == '*' {
@@ -190,11 +222,11 @@ func ProcessQueryBuf(client *GodisClient) error {
 	return nil
 }
 
-func ReadQueryFromClient(loop *AeLoop, fd int, extra any) {
-	client := extra.(*GodisClient)
+func ReadQueryFromClient(loop *AeLoop, fd int, extra interface{}) {
+	client := extra.(*GoRedisClient)
 	// 装不下，进行扩容
-	if len(client.queryBuf)-client.queryLen < GODIS_MAX_BULK {
-		client.queryBuf = append(client.queryBuf, make([]byte, GODIS_MAX_BULK)...)
+	if len(client.queryBuf)-client.queryLen < MAX_BULK {
+		client.queryBuf = append(client.queryBuf, make([]byte, MAX_BULK)...)
 	}
 	n, err := Read(fd, client.queryBuf[client.queryLen:])
 	if err != nil {
@@ -212,8 +244,8 @@ func ReadQueryFromClient(loop *AeLoop, fd int, extra any) {
 		return
 	}
 }
-func SendReplyToClient(loop *AeLoop, fd int, extra any) {
-	client := extra.(*GodisClient)
+func SendReplyToClient(loop *AeLoop, fd int, extra interface{}) {
+	client := extra.(*GoRedisClient)
 	for client.reply.Length() > 0 {
 		// 取第一个元素
 		rep := client.reply.First()
@@ -229,20 +261,20 @@ func SendReplyToClient(loop *AeLoop, fd int, extra any) {
 			client.sentLen += n
 			// 完全发送完
 			if client.sentLen == bufLen {
-				client.reply.Delete(rep.Val)
+				client.reply.DelNode(rep)
 				// go 本身有gc是不用实现refcount的，这里是为了复现redis
 				rep.Val.DecrRefCount()
 				client.sentLen = 0
 			} else {
 				// 注意，write了不一定全部发送，真正n才是有效发送的，
 				// 不等于说明fd的缓冲区满了
-				break;
+				break
 			}
 		}
 	}
 	if client.reply.Length() == 0 {
 		client.sentLen = 0
-		loop.RemoveFileEvent(fd,AE_WRITABLE)
+		loop.RemoveFileEvent(fd, AE_WRITABLE)
 	}
 }
 
@@ -253,25 +285,25 @@ func GStrEqual(a, b *GObj) bool {
 	return a.Val_.(string) == b.Val_.(string)
 }
 
-func GStrHash(key *GObj) int {
+func GStrHash(key *GObj) int64 {
 	if key.Type_ != GSTR {
 		return 0
 	}
-	hash := fnv.New32()
+	hash := fnv.New64()
 	hash.Write([]byte(key.Val_.(string)))
-	return int(hash.Sum32())
+	return int64(hash.Sum64())
 }
 
-func CreateClient(fd int) *GodisClient {
-	return &GodisClient{
+func CreateClient(fd int) *GoRedisClient {
+	return &GoRedisClient{
 		fd:       fd,
 		db:       server.db,
-		queryBuf: make([]byte, GODIS_IO_BUF),
+		queryBuf: make([]byte, IO_BUF),
 		reply:    ListCreate(ListType{EqualFunc: GStrEqual}),
 	}
 }
 
-func AcceptHandler(_ *AeLoop, fd int, extra any) {
+func AcceptHandler(_ *AeLoop, fd int, extra interface{}) {
 	nfd, err := Accept(fd)
 	if err != nil {
 		log.Printf("accept err: %v\n", err)
@@ -288,35 +320,42 @@ const EXPIRE_CHECK_COUNT int = 100
 func ServerCron(_ *AeLoop, id int, extra interface{}) {
 	// 随机检查100个在expire字典的key
 	for i := 0; i < EXPIRE_CHECK_COUNT; i++ {
-		key, val := server.db.expire.RandomGet()
-		if key == nil {
+		entry := server.db.expire.RandomGet()
+		if entry == nil {
 			break
 		}
-		if int64(val.IntVal()) < time.Now().Unix() {
-			server.db.data.RemoveKey(key)
-			server.db.expire.RemoveKey(key)
+		// expire dict 的 val 是时间戳
+		if int64(entry.Val.IntVal()) < time.Now().Unix() {
+			server.db.data.Delete(entry.Key)
+			server.db.expire.Delete(entry.Key)
 		}
 	}
 }
 
+// initServer 初始化server
 func initServer(config *Config) error {
 	server.port = config.Port
-	server.clients = make(map[int]*GodisClient)
-	server.db = &GodisDB{
+	server.clients = make(map[int]*GoRedisClient)
+	// 创建两个大字典，redis本身也是个大dict
+	server.db = &GoRedisDB{
 		data:   DictCreate(DictType{HashFunc: GStrHash, EqualFunc: GStrEqual}),
 		expire: DictCreate(DictType{HashFunc: GStrHash, EqualFunc: GStrEqual}),
 	}
 	var err error
+	// 创建ae事件
 	if server.aeLoop, err = AeLoopCreate(); err != nil {
 		return err
 	}
-	server.fd, err = TcpServer(server.port)
-	return err
+	if server.fd, err = TcpServer(server.port); err != nil {
+		return err
+	}
+	return nil
 }
 
 func main() {
-	// 入参并加载为配置文件
+	// 入参是配置文件地址
 	path := os.Args[1]
+	// 加载配置文件
 	config, err := LoadConfig(path)
 	if err != nil {
 		log.Printf("config error: %v\n", err)
@@ -324,10 +363,10 @@ func main() {
 	if err = initServer(config); err != nil {
 		log.Printf("init server error: %v\n", err)
 	}
-	// 为server fd添加事件
+	// 为server fd添加readable事件,该事件由AcceptHandler处理
 	server.aeLoop.AddFileEvent(server.fd, AE_READABLE, AcceptHandler, nil)
 	// 启动清除expire key 的事件
 	server.aeLoop.AddTimeEvent(AE_NORMAL, 100, ServerCron, nil)
-	log.Println("godis server is up.")
+	log.Println("go-redis server is up.")
 	server.aeLoop.AeMain()
 }
