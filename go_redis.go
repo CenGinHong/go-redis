@@ -46,8 +46,8 @@ type GoRedisClient struct {
 	queryBuf []byte
 	queryLen int // 未处理的命令的长度
 	cmdTy    CmdType
-	bulkNum  int
-	bulkLen  int
+	bulkNum  int // multi模式下数组的长度
+	bulkLen  int // multi模式下数组的子元素的长度
 }
 
 type CommandProc func(c *GoRedisClient)
@@ -92,6 +92,7 @@ func resetClient(client *GoRedisClient) {
 	client.cmdTy = COMMAND_UNKNOW
 }
 
+// findLineInQuery 找到第一个\r\n的位置
 func (client *GoRedisClient) findLineInQuery() (int, error) {
 	index := strings.Index(string(client.queryBuf[:client.queryLen]), "\r\n")
 	if index < 0 && client.queryLen > MAX_INLINE {
@@ -113,28 +114,34 @@ func handleInlineBuf(client *GoRedisClient) (bool, error) {
 	if index < 0 {
 		return false, err
 	}
+	// 用空格切分
 	subs := strings.Split(string(client.queryBuf[:index]), " ")
+	// 更新buf
 	client.queryBuf = client.queryBuf[index+2:]
 	client.queryLen -= index + 2
+	// 把这段作为参数置入
 	client.args = make([]*GObj, len(subs))
 	for i, v := range subs {
+		// 创建GObj
 		client.args[i] = CreateObject(GSTR, v)
 	}
 	return true, nil
 }
 
+// handleBulkBuf 解析多行 eg:*3\r\n$3\r\nSet\r\n$3\r\nKey\r\n$3\r\nVal\r\n
 func handleBulkBuf(client *GoRedisClient) (bool, error) {
 	if client.bulkNum == 0 {
-		// 说明还没有读出来
+		// 找\r\n位置
 		index, err := client.findLineInQuery()
-		if index < 0 {
+		if index < 0 || err != nil {
 			return false, err
 		}
-		// 把形如*3\r\n的数字且出来
+		// 把形如*3\r\n的数字读出来
 		bnum, err := client.getNumInQuery(1, index)
 		if err != nil {
 			return false, err
 		}
+		// 数组元素为空
 		if bnum == 0 {
 			return true, nil
 		}
@@ -148,34 +155,30 @@ func handleBulkBuf(client *GoRedisClient) (bool, error) {
 			if index < 0 {
 				return false, err
 			}
-			// 读出形如 $3r\r\nset\r\n
+			// 读出形如 $3r\n\nset\r\n
 			if client.queryBuf[0] != '$' {
 				return false, errors.New("expect $ for bulk length")
 			}
+			// 该元素的长度,就是上面的3
 			blen, err := client.getNumInQuery(1, index)
 			if err != nil || blen == 0 {
 				return false, err
 			}
+			// 单条bulkLen的长度
 			if blen > MAX_BULK {
 				return false, errors.New("too big bulk")
 			}
 			client.bulkLen = blen
 		}
+		// 可能未完全接受，例如$3\r\nSe
 		if client.queryLen < client.bulkLen+2 {
 			return false, nil
 		}
+		// 接受该bulk缓存
 		index := client.bulkLen
 		if client.queryBuf[index] != '\r' || client.queryBuf[index+1] != '\n' {
 			return false, errors.New("expect CRLF for bulk end")
 		}
-		// index, err := client.findLineInQuery()
-		// if index < 0 {
-		// 	return false, err
-		// }
-		// // 长度的应该和\r\n的位置呼应
-		// if client.bulkLen != index {
-		// 	return false, fmt.Errorf("expect bulk length %v, get %v", client.bulkLen, index)
-		// }
 		// bulkNum会迭代递减
 		client.args[len(client.args)-client.bulkNum] = CreateObject(GSTR, string(client.queryBuf[:index]))
 		client.queryBuf = client.queryBuf[index+2:]
@@ -186,7 +189,9 @@ func handleBulkBuf(client *GoRedisClient) (bool, error) {
 	return true, nil
 }
 
+// ProcessQueryBuf 处理命令
 func ProcessQueryBuf(client *GoRedisClient) error {
+	// 当有未处理的命令时
 	for client.queryLen > 0 {
 		if client.cmdTy == COMMAND_UNKNOW {
 			if client.queryBuf[0] == '*' {
@@ -216,6 +221,7 @@ func ProcessQueryBuf(client *GoRedisClient) error {
 			}
 		} else {
 			// cmd incompelete
+			// 命令不完整
 			break
 		}
 	}
@@ -225,9 +231,11 @@ func ProcessQueryBuf(client *GoRedisClient) error {
 func ReadQueryFromClient(loop *AeLoop, fd int, extra interface{}) {
 	client := extra.(*GoRedisClient)
 	// 装不下，进行扩容
+	// 这里减出来的空间用于放一条bulk命令，为了保证能够至少放得下，需要提前扩容
 	if len(client.queryBuf)-client.queryLen < MAX_BULK {
 		client.queryBuf = append(client.queryBuf, make([]byte, MAX_BULK)...)
 	}
+	// queryLen前面还没有处理，不允许覆盖
 	n, err := Read(fd, client.queryBuf[client.queryLen:])
 	if err != nil {
 		log.Printf("client %v read err: %v\n", fd, err)
@@ -238,12 +246,14 @@ func ReadQueryFromClient(loop *AeLoop, fd int, extra interface{}) {
 			freeClient(client)
 		}
 	}()
+	// 增加未处理命令的长度
 	client.queryLen += n
 	if err = ProcessQueryBuf(client); err != nil {
 		log.Printf("process query buf err: %v\n", err)
 		return
 	}
 }
+
 func SendReplyToClient(loop *AeLoop, fd int, extra interface{}) {
 	client := extra.(*GoRedisClient)
 	for client.reply.Length() > 0 {
@@ -311,8 +321,8 @@ func AcceptHandler(_ *AeLoop, fd int, extra interface{}) {
 	}
 	client := CreateClient(nfd)
 	// TODO: check max clients limit
-	server.clients[fd] = client
-	server.aeLoop.AddFileEvent(fd, AE_READABLE, ReadQueryFromClient, client)
+	server.clients[nfd] = client
+	server.aeLoop.AddFileEvent(nfd, AE_READABLE, ReadQueryFromClient, client)
 }
 
 const EXPIRE_CHECK_COUNT int = 100

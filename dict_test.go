@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-
 func TestDict(t *testing.T) {
 	dict := DictCreate(DictType{HashFunc: GStrHash, EqualFunc: GStrEqual})
 	entry := dict.RandomGet()
@@ -15,7 +14,7 @@ func TestDict(t *testing.T) {
 
 	k1 := CreateObject(GSTR, "k1")
 	v1 := CreateObject(GSTR, "v1")
-	e := dict.Add(k1, v1)
+	e := dict.add(k1, v1)
 	assert.Nil(t, e)
 
 	entry = dict.Find(k1)
@@ -31,7 +30,7 @@ func TestDict(t *testing.T) {
 	assert.Equal(t, 1, k1.refCount)
 	assert.Equal(t, 1, v1.refCount)
 
-	e = dict.Add(k1, v1)
+	e = dict.add(k1, v1)
 	assert.Nil(t, e)
 	v := dict.Get(k1)
 	assert.Equal(t, v1, v)
@@ -43,6 +42,9 @@ func TestDict(t *testing.T) {
 	assert.Equal(t, 1, v1.refCount)
 }
 
+func Testfloat(t *testing.T) {
+
+}
 func TestRehash(t *testing.T) {
 	dict := DictCreate(DictType{HashFunc: GStrHash, EqualFunc: GStrEqual})
 	entry := dict.RandomGet()
@@ -52,14 +54,14 @@ func TestRehash(t *testing.T) {
 	for i := 0; i < valve; i++ {
 		key := CreateObject(GSTR, fmt.Sprintf("k%v", i))
 		val := CreateObject(GSTR, fmt.Sprintf("v%v", i))
-		e := dict.Add(key, val)
+		e := dict.add(key, val)
 		assert.Nil(t, e)
 	}
 	assert.Equal(t, false, dict.isRehashing())
 
 	key := CreateObject(GSTR, fmt.Sprintf("k%v", valve))
 	val := CreateObject(GSTR, fmt.Sprintf("v%v", valve))
-	e := dict.Add(key, val)
+	e := dict.add(key, val)
 	assert.Nil(t, e)
 	assert.Equal(t, true, dict.isRehashing())
 	assert.Equal(t, int64(0), dict.rehashIdx)

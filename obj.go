@@ -1,6 +1,9 @@
 package main
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+)
 
 type GType uint8
 
@@ -35,10 +38,25 @@ func (o *GObj) StrVal() string {
 	return o.Val_.(string)
 }
 
+func (o *GObj) FloatVal() float64 {
+	if o.Type_ != GSTR {
+		return 0
+	}
+	return o.Val_.(float64)
+}
+
 func CreateFromInt(val int) *GObj {
 	return &GObj{
 		Type_:    GSTR,
 		Val_:     strconv.Itoa(val),
+		refCount: 1,
+	}
+}
+
+func CreateFromFloat(val float64) *GObj {
+	return &GObj{
+		Type_:    GSTR,
+		Val_:     fmt.Sprintf("%f", val), // float转string
 		refCount: 1,
 	}
 }

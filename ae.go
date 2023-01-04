@@ -44,7 +44,7 @@ type AeTimeEvent struct {
 
 type AeLoop struct {
 	FileEvents      map[int]*AeFileEvent // 在client注册和销毁是都要使用到，方便进行添加和销魂
-	TimeEvents      *AeTimeEvent // 使用的链表结构
+	TimeEvents      *AeTimeEvent         // 使用的链表结构
 	fileEventFd     int
 	timeEventNextId int
 	stop            bool
@@ -77,10 +77,10 @@ func (loop *AeLoop) getEpollMask(fd int) uint32 {
 
 func (loop *AeLoop) AddFileEvent(fd int, mask FeType, proc FileProc, extra interface{}) {
 	// epoll ctl
-	// 如果已经订阅过就把操作设为修改
 	op := unix.EPOLL_CTL_ADD
 	// 获取已经绑定的事件
 	ev := loop.getEpollMask(fd)
+	// 如果已经订阅过就把操作设为修改
 	if ev != 0 {
 		op = unix.EPOLL_CTL_MOD
 	}
@@ -95,7 +95,7 @@ func (loop *AeLoop) AddFileEvent(fd int, mask FeType, proc FileProc, extra inter
 	}
 	// 创建ae事件
 	fe := AeFileEvent{
-		fd:    fd, 
+		fd:    fd,
 		mask:  mask, // readable or writeable
 		proc:  proc, // 事件的处理
 		extra: extra,

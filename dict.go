@@ -46,11 +46,12 @@ type Dict struct {
 }
 
 func DictCreate(dictType DictType) *Dict {
-	var dict Dict
-	dict.DictType = dictType
-	dict.rehashIdx = -1
+    dict := &Dict {
+		DictType: dictType,
+		rehashIdx: -1,
+	}
 	// 这里暂时未初始化两个htable
-	return &dict
+	return dict
 }
 
 // isRehashing 返回是否在rehash过程中
@@ -173,8 +174,8 @@ func (d *Dict) keyIndex(key *GObj) int64 {
 	return idx
 }
 
-// AddRaw 若存在返回nil，不存在返回一个新建的entry
-func (d *Dict) AddRaw(key *GObj) *Entry {
+// addRaw 若存在返回nil，不存在返回一个新建的entry
+func (d *Dict) addRaw(key *GObj) *Entry {
 	if d.isRehashing() {
 		d.rehashStep()
 	}
@@ -199,11 +200,11 @@ func (d *Dict) AddRaw(key *GObj) *Entry {
 	return &e
 }
 
-// Add 新增一则key-value,如果key已经存在返回错误
-// 要新开一个Add方法而不是复用put是因为需要不同记录GObj的ref
-func (d *Dict) Add(key, val *GObj) error {
+// add 新增一则key-value,如果key已经存在返回错误
+// 要新开一个add方法而不是复用put是因为需要不同记录GObj的ref
+func (d *Dict) add(key, val *GObj) error {
 	// 返回一个entry,如果该key已经存在则返回一个空entry
-	entry := d.AddRaw(key)
+	entry := d.addRaw(key)
 	if entry == nil {
 		return ErrEX
 	}
@@ -214,15 +215,17 @@ func (d *Dict) Add(key, val *GObj) error {
 
 // Set 找到entry并把val引用值修改
 func (d *Dict) Set(key, val *GObj) {
-	// 先尝试添加，没有错误则返回
-	if err := d.Add(key, val); err == nil {
-		return
-	}
-	// 有错误则尝试修改
+	// 找有没有存在
 	entry := d.Find(key)
-	entry.Val.DecrRefCount()
-	entry.Val = val
-	val.IncrRefCount()
+	// 本身不存在
+	if entry == nil {
+		d.add(key, val)
+	} else {
+		// 已存在则修改
+		entry.Val.DecrRefCount()
+		entry.Val = val
+		val.IncrRefCount()
+	}
 }
 
 func freeEntry(e *Entry) {
@@ -263,7 +266,7 @@ func (d *Dict) Delete(key *GObj) error {
 	return ErrNK
 }
 
-// Find 找key对应的键值对
+// Find 找key对应的键值对,没有则返回nil
 func (d *Dict) Find(key *GObj) *Entry {
 	if d.hts[0] == nil {
 		return nil
@@ -325,7 +328,8 @@ func (d *Dict) RandomGet() *Entry {
 	// 仍然没有随机到不为空的槽
 	if d.hts[t].table[idx] == nil {
 		// 顺序遍历一次
-		for i := int64(0); i < d.hts[t].size && d.hts[t] == nil; i++ {}
+		for i := int64(0); i < d.hts[t].size && d.hts[t] == nil; i++ {
+		}
 	}
 	// 求出链长
 	listLen := int64(0)
