@@ -3,6 +3,11 @@ module go-redis
 go 1.19
 
 require (
+	golang.org/x/sys v0.5.0
+	gopkg.in/yaml.v2 v2.4.0
+)
+
+require (
 	github.com/cilium/ebpf v0.7.0 // indirect
 	github.com/cosiner/argv v0.1.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.0 // indirect
@@ -27,7 +32,5 @@ require (
 	github.com/stretchr/testify v1.8.1 // indirect
 	go.starlark.net v0.0.0-20220816155156-cfacd8902214 // indirect
 	golang.org/x/arch v0.0.0-20190927153633-4e8777c89be4 // indirect
-	golang.org/x/sys v0.1.0 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

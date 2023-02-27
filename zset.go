@@ -142,9 +142,6 @@ func (z *skipList) insertInner(score float64, elem *GObj) {
 	z.length++
 }
 
-// func (z *ZSet) Set(key *GObj, score float64, val *GObj) {
-// 	z.insertInner()
-// }
 
 func (z *skipList) Get(score float64) *GObj {
 	x := z.head
@@ -216,7 +213,6 @@ func (z *ZSet) Add(score float64, mem *GObj) {
 			z.zsl.insertInner(score, mem)
 			// TODO 奇怪，为什么要incr
 			mem.IncrRefCount()
-			// z.dict.Set(crea)
 		}
 	}
 

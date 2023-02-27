@@ -42,9 +42,6 @@ func TestDict(t *testing.T) {
 	assert.Equal(t, 1, v1.refCount)
 }
 
-func Testfloat(t *testing.T) {
-
-}
 func TestRehash(t *testing.T) {
 	dict := DictCreate(DictType{HashFunc: GStrHash, EqualFunc: GStrEqual})
 	entry := dict.RandomGet()

@@ -21,7 +21,7 @@ func Connect(host [4]byte, port int) (int, error) {
 		log.Printf("init socket err: %v\n", err)
 		return -1, err
 	}
-	addr := unix.SockaddrInet4 {
+	addr := unix.SockaddrInet4{
 		Addr: host,
 		Port: port,
 	}
@@ -38,6 +38,10 @@ func Read(fd int, buf []byte) (int, error) {
 
 func Write(fd int, buf []byte) (int, error) {
 	return unix.Write(fd, buf)
+}
+
+func Close(fd int) {
+	unix.Close(fd)
 }
 
 // TcpServer 监听端口，并返回一个fd

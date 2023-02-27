@@ -23,11 +23,11 @@ type GObj struct {
 	refCount int
 }
 
-func (o *GObj) IntVal() int {
+func (o *GObj) IntVal() int64 {
 	if o.Type_ != GSTR {
 		return 0
 	}
-	val, _ := strconv.Atoi(o.Val_.(string))
+	val, _ := strconv.ParseInt(o.Val_.(string),10,64)
 	return val
 }
 
@@ -45,10 +45,10 @@ func (o *GObj) FloatVal() float64 {
 	return o.Val_.(float64)
 }
 
-func CreateFromInt(val int) *GObj {
+func CreateFromInt(val int64) *GObj {
 	return &GObj{
 		Type_:    GSTR,
-		Val_:     strconv.Itoa(val),
+		Val_:     strconv.FormatInt(val,10),
 		refCount: 1,
 	}
 }

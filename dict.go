@@ -46,8 +46,8 @@ type Dict struct {
 }
 
 func DictCreate(dictType DictType) *Dict {
-    dict := &Dict {
-		DictType: dictType,
+	dict := &Dict{
+		DictType:  dictType,
 		rehashIdx: -1,
 	}
 	// 这里暂时未初始化两个htable
@@ -219,7 +219,9 @@ func (d *Dict) Set(key, val *GObj) {
 	entry := d.Find(key)
 	// 本身不存在
 	if entry == nil {
-		d.add(key, val)
+		if err := d.add(key, val); err != nil {
+			return
+		}
 	} else {
 		// 已存在则修改
 		entry.Val.DecrRefCount()
@@ -292,8 +294,8 @@ func (d *Dict) Find(key *GObj) *Entry {
 }
 
 // Get 获取key对应的val
-func (dict *Dict) Get(key *GObj) *GObj {
-	entry := dict.Find(key)
+func (d *Dict) Get(key *GObj) *GObj {
+	entry := d.Find(key)
 	if entry == nil {
 		return nil
 	}
@@ -332,13 +334,16 @@ func (d *Dict) RandomGet() *Entry {
 		}
 	}
 	// 求出链长
-	listLen := int64(0)
+	var listLen int64
 	p := d.hts[t].table[idx]
 	for p != nil {
 		listLen++
 		p = p.next
 	}
 	// 随机定位到
+	if listLen == 0 {
+		return nil
+	}
 	listIdx := rand.Int63n(listLen)
 	p = d.hts[t].table[idx]
 	for i := int64(0); i < listIdx; i++ {

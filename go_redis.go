@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log"
 	"os"
@@ -65,27 +66,123 @@ var server GoRedisServer
 var cmdTable []GoRedisCommand = []GoRedisCommand{
 	{"get", getCommand, 2},
 	{"set", setCommand, 3},
+	{"expire", expireCommand, 3},
 }
 
 func getCommand(c *GoRedisClient) {
-	// TODO
+	key := c.args[1]
+	val := findKeyRead(key)
+	// 找有没有这个key,可能会过期
+	if val == nil {
+		// TODO: extract shared.strings
+		c.AddReplyStr("$-1\r\n")
+	} else if val.Type_ != GSTR {
+		// TODO: extract shared.strings
+		// 不是stirng类型，应该用其他的命令获取
+		c.AddReplyStr("-ERR: wrong type\r\n")
+	} else {
+		str := val.StrVal()
+		// 返回value
+		c.AddReplyStr(fmt.Sprintf("$%d%v\r\n", len(str), str))
+	}
 }
 
 func setCommand(c *GoRedisClient) {
-	// TODO
+	key := c.args[1]
+	val := c.args[2]
+	if val.Type_ != GSTR {
+		// TODO: extract shared.strings
+		c.AddReplyStr("-ERR: wrong type\r\n")
+	}
+	server.db.data.Set(key, val)
+	server.db.expire.Delete(key)
+	c.AddReplyStr("+OK\r\n")
+}
+
+func expireCommand(c *GoRedisClient) {
+	key := c.args[1]
+	val := c.args[2]
+	if val.Type_ != GSTR {
+		// TODO: extract shared.strings
+		c.AddReplyStr("-ERR: wrong type\r\n")
+	}
+	// 转换成毫秒
+	expire := GetMsTime() + (val.IntVal() * 1000)
+	expObj := CreateFromInt(expire)
+	server.db.expire.Set(key, expObj)
+	expObj.DecrRefCount()
+	c.AddReplyStr("+OK\r\n")
+}
+
+func findKeyRead(key *GObj) *GObj {
+	expireIfNeeded(key)
+	return server.db.data.Get(key)
+}
+
+// expireIfNeeded 检查是否已经过期
+func expireIfNeeded(key *GObj) {
+	entry := server.db.expire.Find(key)
+	if entry == nil {
+		return
+	}
+	when := entry.Val.IntVal()
+	if when > GetMsTime() {
+		return
+	}
+	_ = server.db.expire.Delete(key)
+	_ = server.db.data.Delete(key)
+}
+
+func lookupCommand(cmdStr string) *GoRedisCommand {
+	// TODO 忽略大小写
+	for _, c := range cmdTable {
+		if strings.EqualFold(c.name, cmdStr) {
+			return &c
+		}
+	}
+	return nil
 }
 
 func ProcessCommand(client *GoRedisClient) {
-	//TODO: lookup command
-	//TODO: call command
-	//TODO: decrRef args
-	resetClient(client)
+	cmdStr := client.args[0].StrVal()
+	log.Printf("process command: %v\n", cmdStr)
+	if cmdStr == "quit" {
+		freeClient(client)
+		return
+	}
+	defer resetClient(client)
+	cmd := lookupCommand(cmdStr)
+	if cmd == nil {
+		client.AddReplyStr("-ERR: unknow command\r\n")
+		return
+	} else if cmd.arity != len(client.args) {
+		client.AddReplyStr("-ERR: wrong number of args\r\n")
+		return
+	}
+	cmd.proc(client)
+}
+
+func freeArgs(client *GoRedisClient) {
+	for _, v := range client.args {
+		v.DecrRefCount()
+	}
+}
+
+func freeReplyList(client *GoRedisClient) {
+	for client.reply.length != 0 {
+		n := client.reply.head
+		client.reply.DelNode(n)
+		n.Val.DecrRefCount()
+	}
 }
 
 func freeClient(client *GoRedisClient) {
-	//TODO: delete file event
-	//TODO: decrRef reply & args list
-	//TODO: delete from clients
+	freeArgs(client)
+	delete(server.clients, client.fd)
+	server.aeLoop.RemoveFileEvent(client.fd, AE_READABLE)
+	server.aeLoop.RemoveFileEvent(client.fd, AE_WRITABLE)
+	freeReplyList(client)
+	Close(client.fd)
 }
 
 func resetClient(client *GoRedisClient) {
@@ -93,19 +190,31 @@ func resetClient(client *GoRedisClient) {
 }
 
 // findLineInQuery 找到第一个\r\n的位置
-func (client *GoRedisClient) findLineInQuery() (int, error) {
-	index := strings.Index(string(client.queryBuf[:client.queryLen]), "\r\n")
-	if index < 0 && client.queryLen > MAX_INLINE {
+func (c *GoRedisClient) findLineInQuery() (int, error) {
+	index := strings.Index(string(c.queryBuf[:c.queryLen]), "\r\n")
+	if index < 0 && c.queryLen > MAX_INLINE {
 		return index, errors.New("to bug inline cmd")
 	}
 	return index, nil
 }
 
-func (client *GoRedisClient) getNumInQuery(s, e int) (int, error) {
-	num, err := strconv.Atoi(string(client.queryBuf[s:e]))
-	client.queryBuf = client.queryBuf[e+2:]
-	client.queryLen -= e + 2
+func (c *GoRedisClient) getNumInQuery(s, e int) (int, error) {
+	num, err := strconv.Atoi(string(c.queryBuf[s:e]))
+	c.queryBuf = c.queryBuf[e+2:]
+	c.queryLen -= e + 2
 	return num, err
+}
+
+func (c *GoRedisClient) AddReply(o *GObj) {
+	c.reply.Append(o)
+	o.IncrRefCount()
+	server.aeLoop.AddFileEvent(c.fd, AE_WRITABLE, SendReplyToClient, c)
+}
+
+func (c *GoRedisClient) AddReplyStr(str string) {
+	o := CreateObject(GSTR, str)
+	c.AddReply(o)
+	o.DecrRefCount()
 }
 
 func handleInlineBuf(client *GoRedisClient) (bool, error) {
@@ -248,6 +357,8 @@ func ReadQueryFromClient(loop *AeLoop, fd int, extra interface{}) {
 	}()
 	// 增加未处理命令的长度
 	client.queryLen += n
+	log.Printf("read %v bytes from client:%v\n", n, client.fd)
+	log.Printf("ReadQueryFromClient, queryBuf : %v\n", string(client.queryBuf))
 	if err = ProcessQueryBuf(client); err != nil {
 		log.Printf("process query buf err: %v\n", err)
 		return
@@ -256,6 +367,7 @@ func ReadQueryFromClient(loop *AeLoop, fd int, extra interface{}) {
 
 func SendReplyToClient(loop *AeLoop, fd int, extra interface{}) {
 	client := extra.(*GoRedisClient)
+	log.Printf("SendReplyToClient, reply len:%v\n", client.reply.Length())
 	for client.reply.Length() > 0 {
 		// 取第一个元素
 		rep := client.reply.First()
@@ -269,6 +381,7 @@ func SendReplyToClient(loop *AeLoop, fd int, extra interface{}) {
 				return
 			}
 			client.sentLen += n
+			log.Printf("send %v bytes to client:%v\n", n, client.fd)
 			// 完全发送完
 			if client.sentLen == bufLen {
 				client.reply.DelNode(rep)
@@ -300,7 +413,9 @@ func GStrHash(key *GObj) int64 {
 		return 0
 	}
 	hash := fnv.New64()
-	hash.Write([]byte(key.Val_.(string)))
+	if _, err := hash.Write([]byte(key.Val_.(string))); err != nil {
+		return 0
+	}
 	return int64(hash.Sum64())
 }
 
@@ -314,15 +429,16 @@ func CreateClient(fd int) *GoRedisClient {
 }
 
 func AcceptHandler(_ *AeLoop, fd int, extra interface{}) {
-	nfd, err := Accept(fd)
+	cfd, err := Accept(fd)
 	if err != nil {
 		log.Printf("accept err: %v\n", err)
 		return
 	}
-	client := CreateClient(nfd)
+	client := CreateClient(cfd)
 	// TODO: check max clients limit
-	server.clients[nfd] = client
-	server.aeLoop.AddFileEvent(nfd, AE_READABLE, ReadQueryFromClient, client)
+	server.clients[cfd] = client
+	server.aeLoop.AddFileEvent(cfd, AE_READABLE, ReadQueryFromClient, client)
+	log.Printf("accept client, fd: %v\n", cfd)
 }
 
 const EXPIRE_CHECK_COUNT int = 100
@@ -335,9 +451,9 @@ func ServerCron(_ *AeLoop, id int, extra interface{}) {
 			break
 		}
 		// expire dict 的 val 是时间戳
-		if int64(entry.Val.IntVal()) < time.Now().Unix() {
-			server.db.data.Delete(entry.Key)
-			server.db.expire.Delete(entry.Key)
+		if entry.Val.IntVal() < time.Now().Unix() {
+			_ = server.db.data.Delete(entry.Key)
+			_ = server.db.expire.Delete(entry.Key)
 		}
 	}
 }
@@ -364,7 +480,10 @@ func initServer(config *Config) error {
 
 func main() {
 	// 入参是配置文件地址
-	path := os.Args[1]
+	path := ""
+	if len(os.Args) > 1 {
+		path = os.Args[1]
+	}
 	// 加载配置文件
 	config, err := LoadConfig(path)
 	if err != nil {
@@ -372,11 +491,19 @@ func main() {
 	}
 	if err = initServer(config); err != nil {
 		log.Printf("init server error: %v\n", err)
+		return
 	}
 	// 为server fd添加readable事件,该事件由AcceptHandler处理
 	server.aeLoop.AddFileEvent(server.fd, AE_READABLE, AcceptHandler, nil)
 	// 启动清除expire key 的事件
 	server.aeLoop.AddTimeEvent(AE_NORMAL, 100, ServerCron, nil)
 	log.Println("go-redis server is up.")
+	log.Println(`     
+	____   ____           _______   ____   __| _/|__| ______
+   / ___\ /  _ \   ______ \_  __ \_/ __ \ / __ | |  |/  ___/
+  / /_/  >  <_> ) /_____/  |  | \/\  ___// /_/ | |  |\___ \ 
+  \___  / \____/           |__|    \___  >____ | |__/____  >
+ /_____/                               \/     \/         \/ 
+ `)
 	server.aeLoop.AeMain()
 }

@@ -51,7 +51,7 @@ type AeLoop struct {
 }
 
 // ae常量到epoll的映射，readable映射EPOLLIN，writeable映射EPOLLOUT
-var fe2ep [3]uint32 = [3]uint32{0, unix.EPOLLIN, unix.EPOLLOUT}
+var fe2ep = [3]uint32{0, unix.EPOLLIN, unix.EPOLLOUT}
 
 // 把fd和事件压缩成一个key，例如那个fd可读
 func getFeKey(fd int, mask FeType) int {
@@ -76,11 +76,13 @@ func (loop *AeLoop) getEpollMask(fd int) uint32 {
 }
 
 func (loop *AeLoop) AddFileEvent(fd int, mask FeType, proc FileProc, extra interface{}) {
-	// epoll ctl
-	op := unix.EPOLL_CTL_ADD
 	// 获取已经绑定的事件
 	ev := loop.getEpollMask(fd)
-	// 如果已经订阅过就把操作设为修改
+	// 如果已经订阅过,返回
+	if ev&fe2ep[mask] != 0 {
+		return
+	}
+	op := unix.EPOLL_CTL_ADD
 	if ev != 0 {
 		op = unix.EPOLL_CTL_MOD
 	}
@@ -101,6 +103,7 @@ func (loop *AeLoop) AddFileEvent(fd int, mask FeType, proc FileProc, extra inter
 		extra: extra,
 	}
 	loop.FileEvents[getFeKey(fd, mask)] = &fe
+	log.Printf("ae add file event fd:%v, mask:%v\n", fd, mask)
 }
 
 func (loop *AeLoop) RemoveFileEvent(fd int, mask FeType) {
@@ -118,9 +121,10 @@ func (loop *AeLoop) RemoveFileEvent(fd int, mask FeType) {
 		log.Printf("epoll del err: %v\n", err)
 	}
 	delete(loop.FileEvents, getFeKey(fd, mask))
+	log.Printf("ae remove file event fd:%v, mask:%v\n", fd, mask)
 }
 
-// 获取当前时间
+// GetMsTime 获取当前时间
 func GetMsTime() int64 {
 	return time.Now().UnixNano() / 1e6
 }
@@ -174,7 +178,7 @@ func AeLoopCreate() (*AeLoop, error) {
 }
 
 func (loop *AeLoop) nearestTime() int64 {
-	var nearest int64 = GetMsTime() + 1000
+	var nearest = GetMsTime() + 1000
 	p := loop.TimeEvents
 	for p != nil {
 		if p.when < nearest {
@@ -185,7 +189,7 @@ func (loop *AeLoop) nearestTime() int64 {
 	return nearest
 }
 
-func (loop *AeLoop) AeWait() (tes []*AeTimeEvent, fes []*AeFileEvent, err error) {
+func (loop *AeLoop) AeWait() (tes []*AeTimeEvent, fes []*AeFileEvent) {
 	// loop.nearestTime() 求出等待io事件的最长时间，最长不能超过当前时间+1s，最短是10ms
 	timeout := loop.nearestTime() - GetMsTime()
 	if timeout <= 0 {
@@ -196,8 +200,10 @@ func (loop *AeLoop) AeWait() (tes []*AeTimeEvent, fes []*AeFileEvent, err error)
 	// 等待事件时间不能超过下一个时间事件到来之前
 	n, err := unix.EpollWait(loop.fileEventFd, events[:], int(timeout))
 	if err != nil {
-		log.Printf("epoll wait err: %v\n", err)
-		return
+		log.Printf("epoll wait warning: %v\n", err)
+	}
+	if n > 0 {
+		log.Printf("ae get %v epoll events\n", n)
 	}
 	// 收集所有file events
 	for i := 0; i < n; i++ {
@@ -237,18 +243,18 @@ func (loop *AeLoop) AeProcess(tes []*AeTimeEvent, fes []*AeFileEvent) {
 			te.when = GetMsTime() + te.interval
 		}
 	}
-	for _, fe := range fes {
-		fe.proc(loop, fe.fd, fe.extra)
+	if len(fes) > 0 {
+		log.Println("ae is processing file events")
+		for _, fe := range fes {
+			fe.proc(loop, fe.fd, fe.extra)
+		}
 	}
 }
 
 func (loop *AeLoop) AeMain() {
 	for !loop.stop {
 		// 收集所有的事件
-		tes, fes, err := loop.AeWait()
-		if err != nil {
-			loop.stop = true
-		}
+		tes, fes := loop.AeWait()
 		loop.AeProcess(tes, fes)
 	}
 }
